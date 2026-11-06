@@ -6,6 +6,10 @@ open System.Windows.Forms
 open Bridge
 
 type Phase = Auction | Play | Finished
+/// One line of the auction grid: a call (or blank) per seat, North to West.
+type AuctionRow =
+    { Cells: string array; Spoken: string }
+    override row.ToString() = row.Spoken
 
 [<STAThread; EntryPoint>]
 let main _ =
@@ -13,7 +17,7 @@ let main _ =
     Application.SetHighDpiMode(HighDpiMode.SystemAware) |> ignore
     Application.EnableVisualStyles()
     Application.SetCompatibleTextRenderingDefault(false)
-    // The layout is designed in 96-DPI pixels for a 2000 × 1040 client area (13 cards
+    // The layout is designed in 96-DPI pixels for a 2000 × 1120 client area (13 cards
     // across, all rows visible). Scale it to the system DPI, then shrink it uniformly
     // if the screen cannot hold it. Font sizes are in points, which already follow the DPI.
     let dpi =
@@ -22,7 +26,7 @@ let main _ =
     let area = Screen.FromPoint(Control.MousePosition).WorkingArea
     let fit =
         min 1.0f (min (float32 area.Width / (2000.0f * dpi))
-                      (float32 (area.Height - SystemInformation.CaptionHeight) / (1040.0f * dpi)))
+                      (float32 (area.Height - SystemInformation.CaptionHeight) / (1120.0f * dpi)))
     let px (n: int) = int (MathF.Round(float32 n * dpi * fit))
     let pt (size: float32) = size * fit
     let felt = Color.FromArgb(24, 79, 66)
@@ -36,7 +40,7 @@ let main _ =
     let root = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, Padding = Padding(px 16),
                                     AutoScroll = true)
     // The bidding row holds three rows of 82-pixel buttons.
-    for h in [48; 200; 220; 44; 250; 200] do root.RowStyles.Add(RowStyle(SizeType.Absolute, float32 (px h))) |> ignore
+    for h in [48; 200; 300; 44; 250; 200] do root.RowStyles.Add(RowStyle(SizeType.Absolute, float32 (px h))) |> ignore
     root.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
     form.Controls.Add root
     let label text =
@@ -47,12 +51,11 @@ let main _ =
         new Button(Text = text, Width = px width, Height = px height, Margin = Padding(px 2), UseVisualStyleBackColor = false,
                    BackColor = white, ForeColor = dark, FlatStyle = FlatStyle.Flat)
     use cardFont = new Font("Segoe UI", pt 36.0f, FontStyle.Bold)
-    use suitFont = new Font("Segoe UI Symbol", pt 46.0f)
-    use cardNameFont = new Font("Segoe UI", pt 18.0f, FontStyle.Bold)
-    // Two lines such as "Queen / of diamonds" must fit a 144 × 62 slot: 16pt measures 129 × 60.
-    use tileNameFont = new Font("Segoe UI", pt 16.0f, FontStyle.Bold)
+    use suitFont = new Font("Segoe UI Symbol", pt 56.0f)
+    use strainNameFont = new Font("Segoe UI", pt 18.0f, FontStyle.Bold)
     use bidFont = new Font("Segoe UI", pt 24.0f, FontStyle.Bold)
     use statusFont = new Font("Segoe UI", pt 16.0f, FontStyle.Bold)
+    use auctionFont = new Font("Segoe UI Semibold", pt 22.0f)
     let displaySuitOrder = [| 0; 1; 3; 2 |]
     let displayOrder card = Array.findIndex ((=) card.Suit) displaySuitOrder, -card.Rank
     let suitNames = [| "Clubs"; "Diamonds"; "Hearts"; "Spades"; "No trump" |]
@@ -107,8 +110,23 @@ let main _ =
     center.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
     let trickView = label ""
     trickView.Font <- new Font("Segoe UI Semibold", pt 18.0f)
-    let auctionLog = new ListBox(Dock = DockStyle.Fill, BackColor = dark, ForeColor = white,
-                                 BorderStyle = BorderStyle.None, IntegralHeight = false)
+    // The auction is drawn as a grid, one column per seat, as bridge auctions are written.
+    let auctionLog = new ListBox(Dock = DockStyle.Fill, BackColor = dark, ForeColor = white, Font = auctionFont,
+                                 BorderStyle = BorderStyle.None, IntegralHeight = false, SelectionMode = SelectionMode.None)
+    auctionLog.DrawMode <- DrawMode.OwnerDrawFixed
+    auctionLog.ItemHeight <- px 40
+    let headerColor = Color.FromArgb(160, 200, 185)
+    auctionLog.DrawItem.Add(fun e ->
+        use background = new SolidBrush(dark)
+        e.Graphics.FillRectangle(background, e.Bounds)
+        if e.Index >= 0 then
+            let row = auctionLog.Items[e.Index] :?> AuctionRow
+            let width = e.Bounds.Width / 4
+            let color = if e.Index = 0 then headerColor else white
+            for i in 0..3 do
+                TextRenderer.DrawText(e.Graphics, row.Cells[i], auctionFont,
+                                      Rectangle(e.Bounds.X + i * width, e.Bounds.Y, width, e.Bounds.Height), color,
+                                      TextFormatFlags.HorizontalCenter ||| TextFormatFlags.VerticalCenter))
     center.Controls.Add(trickView, 0, 0)
     center.Controls.Add(auctionLog, 0, 1)
     table.Controls.Add(center, 1, 0)
@@ -219,6 +237,100 @@ let main _ =
 
     let clear (panel: Control) =
         while panel.Controls.Count > 0 do panel.Controls[0].Dispose()
+    let faceDownColor = Color.FromArgb(46, 86, 151)
+    let dummySeat () = currentContract |> Option.map (fun c -> partner c.Declarer)
+    let isFaceUp seat = seat = 2 || (dummyVisible && dummySeat () = Some seat)
+    let canPlayFrom seat = phase = Play && trick.Length < 4 && turn = seat && isHuman seat
+
+    // Card tiles are made once per deal. A redraw removes the tiles of played cards and
+    // restyles the others only where their face, colour or playability has changed.
+    let shownFaceUp = Array.create 4 false
+    let makeTile seat card =
+        let tile = button "" 144 166
+        tile.Tag <- box card
+        tile.Paint.Add(fun args ->
+            if isFaceUp seat then
+                let flags = TextFormatFlags.HorizontalCenter ||| TextFormatFlags.VerticalCenter
+                TextRenderer.DrawText(args.Graphics, cardName card, cardFont,
+                                      Rectangle(0, px 6, tile.Width, px 60), tile.ForeColor, flags)
+                TextRenderer.DrawText(args.Graphics, suits[card.Suit], suitFont,
+                                      Rectangle(0, px 58, tile.Width, px 100), tile.ForeColor, flags))
+        tile.Click.Add(fun _ ->
+            if not updating && canPlayFrom seat && List.contains card (legalCards trick hands[seat]) then placeCard card)
+        tile
+    let dealTiles () =
+        for seat in 0..3 do
+            let _, panel = handViews[seat]
+            panel.SuspendLayout()
+            clear panel
+            for card in List.sortBy displayOrder hands[seat] do panel.Controls.Add(makeTile seat card)
+            panel.ResumeLayout()
+            // Differs from the real state, so the next redraw styles every new tile.
+            shownFaceUp[seat] <- not (isFaceUp seat)
+    let updateTiles seat =
+        let _, panel = handViews[seat]
+        let faceUp = isFaceUp seat
+        let playing = canPlayFrom seat
+        let legalNow = if playing then legalCards trick hands[seat] else []
+        for tile in panel.Controls |> Seq.cast<Control> |> Seq.toList do
+            let card = tile.Tag :?> Card
+            if not (List.contains card hands[seat]) then tile.Dispose()
+            else
+                let playable = List.contains card legalNow
+                let back = if not faceUp then faceDownColor elif playing && not playable then Color.Silver else white
+                let fore = if faceUp && (card.Suit = 1 || card.Suit = 2) then Color.Firebrick else dark
+                if tile.BackColor <> back then tile.BackColor <- back
+                if tile.ForeColor <> fore then tile.ForeColor <- fore
+                tile.TabStop <- playable
+                if faceUp <> shownFaceUp[seat] then
+                    tile.AccessibleName <- if faceUp then fullCardName card else "Face-down card"
+                    tile.Invalidate()
+        shownFaceUp[seat] <- faceUp
+
+    // Bid buttons are made once; a redraw only enables the legal calls.
+    let bidButtons =
+        [ for call in [ yield Pass; yield Double; yield Redouble
+                        for l in 1..7 do for s in [0; 1; 3; 2; 4] -> Bid (l, s) ] do
+            let text =
+                match call with
+                | Bid (level, strain) -> string level + " " + suits[strain] + "\n" + suitNames[strain]
+                | _ -> callName call
+            let b = button (match call with Bid _ -> "" | _ -> text) (match call with Bid _ -> 140 | _ -> 175) 78
+            b.Font <- bidFont
+            b.AccessibleName <- text.Replace("\n", " ")
+            match call with
+            | Bid (_, strain) ->
+                b.Paint.Add(fun args ->
+                    let flags = TextFormatFlags.HorizontalCenter ||| TextFormatFlags.VerticalCenter
+                    let color = if b.Enabled then dark else SystemColors.GrayText
+                    TextRenderer.DrawText(args.Graphics, callName call, bidFont,
+                                          Rectangle(0, 0, b.Width, px 43), color, flags)
+                    TextRenderer.DrawText(args.Graphics, suitNames[strain], strainNameFont,
+                                          Rectangle(0, px 43, b.Width, px 33), color, flags))
+            | _ -> ()
+            b.Click.Add(fun _ -> if not updating && phase = Auction && isHuman turn then placeCall call)
+            bidding.Controls.Add b
+            yield call, b ]
+
+    // The auction grid is rebuilt only when a call has been made.
+    let mutable shownHistory = [ -1, Pass ]
+    let updateAuction () =
+        if history <> shownHistory then
+            shownHistory <- history
+            let calls = List.rev history
+            auctionLog.BeginUpdate()
+            auctionLog.Items.Clear()
+            auctionLog.Items.Add(box { Cells = Array.copy seats; Spoken = "Auction" }) |> ignore
+            if not calls.IsEmpty then
+                // Blank cells before the dealer put each call under its seat.
+                let cells = List.replicate dealer "" @ (calls |> List.map (snd >> callName))
+                for chunk in List.chunkBySize 4 cells do
+                    let row = Array.ofList (chunk @ List.replicate (4 - chunk.Length) "")
+                    let spoken = [ for i in 0..3 do if row[i] <> "" then seats[i] + " " + row[i] ] |> String.concat ", "
+                    auctionLog.Items.Add(box { Cells = row; Spoken = spoken }) |> ignore
+            auctionLog.TopIndex <- auctionLog.Items.Count - 1
+            auctionLog.EndUpdate()
+
     redraw <- fun () ->
         updating <- true
         form.SuspendLayout()
@@ -228,45 +340,13 @@ let main _ =
             info.Text <- sprintf "Board %d   |   Dealer %s   |   Vulnerable %s   |   N–S total %+d" board seats[dealer] vulText total
             hintButton.Enabled <- phase = Auction && isHuman turn
             dealButton.Enabled <- (phase = Finished)
-            let dummy = currentContract |> Option.map (fun c -> partner c.Declarer)
             for seat in 0..3 do
-                let caption, panel = handViews[seat]
-                let faceUp = seat = 2 || (dummyVisible && dummy = Some seat)
-                let canPlay = phase = Play && trick.Length < 4 && turn = seat && isHuman seat
+                let caption, _ = handViews[seat]
                 caption.Text <- seats[seat] + (if seat = 2 then " · You" else "")
-                                + (if dummyVisible && dummy = Some seat then " · Dummy" else "")
+                                + (if dummyVisible && dummySeat () = Some seat then " · Dummy" else "")
                                 + (if phase <> Finished && turn = seat then "  ◀" else "")
-                panel.SuspendLayout()
-                clear panel
-                let legalNow = if canPlay then legalCards trick hands[seat] else []
-                for card in List.sortBy displayOrder hands[seat] do
-                    let tile = button "" 144 166
-                    tile.Font <- cardFont
-                    tile.AccessibleName <- if faceUp then fullCardName card else "Face-down card"
-                    if faceUp then
-                        tile.Paint.Add(fun args ->
-                            let color = tile.ForeColor
-                            let flags = TextFormatFlags.HorizontalCenter ||| TextFormatFlags.VerticalCenter
-                            TextRenderer.DrawText(args.Graphics, cardName card, cardFont,
-                                                  Rectangle(0, 0, tile.Width, px 52), color, flags)
-                            TextRenderer.DrawText(args.Graphics, suits[card.Suit], suitFont,
-                                                  Rectangle(0, px 44, tile.Width, px 58), color, flags)
-                            TextRenderer.DrawText(args.Graphics, rankName card.Rank + "\nof " + suitNames[card.Suit].ToLowerInvariant(),
-                                                  tileNameFont, Rectangle(0, px 102, tile.Width, px 62), color, flags))
-                    if not faceUp then tile.BackColor <- Color.FromArgb(46, 86, 151)
-                    elif card.Suit = 1 || card.Suit = 2 then tile.ForeColor <- Color.Firebrick
-                    if canPlay && not (List.contains card legalNow) then tile.BackColor <- Color.Silver
-                    tile.TabStop <- List.contains card legalNow
-                    if List.contains card legalNow then
-                        tile.Click.Add(fun _ -> if not updating && turn = seat && isHuman seat then placeCard card)
-                    panel.Controls.Add tile
-                panel.ResumeLayout()
-            auctionLog.BeginUpdate()
-            auctionLog.Items.Clear()
-            for seat, call in List.rev history do
-                auctionLog.Items.Add(sprintf "%-6s   %s" seats[seat] (callName call)) |> ignore
-            if auctionLog.Items.Count > 0 then auctionLog.TopIndex <- auctionLog.Items.Count - 1
-            auctionLog.EndUpdate()
+                updateTiles seat
+            updateAuction ()
             let shown, title = if List.isEmpty trick then lastTrick, "Last trick" else trick, "Current trick"
             trickView.Text <-
                 if List.isEmpty shown then currentContract |> Option.map describe |> Option.defaultValue "Auction"
@@ -283,32 +363,12 @@ let main _ =
                 match currentContract with
                 | Some c -> sprintf "%s   |   Tricks: N–S %d · E–W %d" (describe c) tricks[0] tricks[1]
                 | None -> "South partners North. Hearts and spades are majors."
-            bidding.SuspendLayout()
-            clear bidding
-            if phase = Auction && isHuman turn then
-                for call in [ yield Pass; yield Double; yield Redouble
-                              for l in 1..7 do for s in [0; 1; 3; 2; 4] -> Bid (l, s) ] do
-                    let text =
-                        match call with
-                        | Bid (level, strain) -> string level + " " + suits[strain] + "\n" + suitNames[strain]
-                        | _ -> callName call
-                    let b = button (match call with Bid _ -> "" | _ -> text) (match call with Bid _ -> 140 | _ -> 175) 78
-                    b.Font <- bidFont
-                    b.AccessibleName <- text.Replace("\n", " ")
-                    match call with
-                    | Bid (_, strain) ->
-                        b.Paint.Add(fun args ->
-                            let flags = TextFormatFlags.HorizontalCenter ||| TextFormatFlags.VerticalCenter
-                            let color = if b.Enabled then dark else SystemColors.GrayText
-                            TextRenderer.DrawText(args.Graphics, callName call, bidFont,
-                                                  Rectangle(0, 0, b.Width, px 43), color, flags)
-                            TextRenderer.DrawText(args.Graphics, suitNames[strain], cardNameFont,
-                                                  Rectangle(0, px 43, b.Width, px 33), color, flags))
-                    | _ -> ()
-                    b.Enabled <- legal history turn call
-                    b.Click.Add(fun _ -> if not updating && isHuman turn then placeCall call)
-                    bidding.Controls.Add b
-            bidding.ResumeLayout()
+            let showBids = phase = Auction && isHuman turn
+            if showBids then
+                for call, b in bidButtons do
+                    let enabled = legal history turn call
+                    if b.Enabled <> enabled then b.Enabled <- enabled
+            bidding.Visible <- showBids
         finally
             form.ResumeLayout(true)
             updating <- false
@@ -328,6 +388,7 @@ let main _ =
         outcome <- ""
         hint <- ""
         phase <- Auction
+        dealTiles ()
         redraw ()
         schedule ()
     dealButton.Click.Add(fun _ -> if phase = Finished then newBoard ())

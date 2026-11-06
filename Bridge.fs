@@ -73,6 +73,41 @@ let acol history seat hand =
     let isLegal = legal history seat
     let cheapest strain limit =
         [1..limit] |> List.map (fun l -> Bid (l, strain)) |> List.tryFind isLegal
+    // Acol: a change of suit by an unpassed responder is forcing for one round, at any turn.
+    // Not forcing: a 2-level suit over 1NT (a weak takeout), a bid at or above game, a new
+    // suit after the side has reached game, and any bid an opponent has since bid over.
+    let forcingNewSuit =
+        let calls = List.rev history
+        let sideBids = calls |> List.choose (function p, Bid (l, s) when side p = side seat -> Some (l, s) | _ -> None)
+        let partnerFirst = calls |> List.tryPick (fun (p, c) -> if p = partner seat then Some c else None)
+        match lastBid history, sideBids with
+        | Some (p, l, s), (_, openingStrain) :: _ when p = partner seat && weOpened && s < 4 && l < gameLevel s
+                                                        && partnerFirst <> Some Pass ->
+            let earlier = sideBids |> List.take (sideBids.Length - 1)
+            let newSuit = earlier |> List.forall (fun (_, bs) -> bs <> s)
+            let gameReached = earlier |> List.exists (fun (bl, bs) -> bl >= gameLevel bs)
+            let weakTakeout = List.head sideBids = (1, 4) && l = 2
+            if newSuit && not gameReached && not weakTakeout then Some (l, s, openingStrain) else None
+        | _ -> None
+    // Opener's answer to a forcing new suit: the first legal call in this list.
+    let forcedBid (level, response, openingStrain) =
+        let partnerEarlier =
+            partnerBids |> List.map snd |> List.filter (fun s -> s < 4 && s <> response) |> List.distinct
+        let sameOrNextLevel s = if s > response then level else level + 1
+        [ if openingStrain = 4 then
+              // A notrump opener: game in partner's major with three-card support, else 3NT.
+              if response >= 2 && shape[response] >= 3 then Bid (4, response)
+              Bid (3, 4)
+          if response >= 2 && shape[response] >= 4 then Bid (level + 1, response)
+          for s in partnerEarlier do
+              if s >= 2 && shape[s] >= 3 then Bid (sameOrNextLevel s, s)
+          if openingStrain < 4 && shape[openingStrain] >= 5 then Bid (sameOrNextLevel openingStrain, openingStrain)
+          if balanced shape && points >= 15 then Bid (min 3 (if points >= 18 then level + 1 else level), 4)
+          for s in 0..3 do
+              if s <> openingStrain && s <> response && shape[s] >= 4 then Bid (sameOrNextLevel s, s)
+          if shape[response] >= 3 then Bid (level + 1, response)
+          Bid (level, 4) ]
+        |> List.tryFind isLegal |> Option.defaultValue Pass
     let choice =
         match lastBid history, partnerBids with
         | None, _ ->
@@ -131,21 +166,16 @@ let acol history seat hand =
                 // A 3-level raise is a limit raise (10–12): accept with 14 or more.
                 elif response = opened && level = 3 && points >= 14 then
                     if opened < 2 then Bid (3, 4) else Bid (4, opened)
-                elif response < 4 && response <> opened then
-                    // A new suit is forcing for one round, so opener never passes it.
-                    let sameOrNextLevel s = if s > response then level else level + 1
-                    [ if response >= 2 && shape[response] >= 4 then Bid (level + 1, response)
-                      if shape[opened] >= 5 then Bid (sameOrNextLevel opened, opened)
-                      if balanced shape && points >= 15 then
-                          Bid (min 3 (if points >= 18 then level + 1 else level), 4)
-                      for s in 0..3 do
-                          if s <> opened && s <> response && shape[s] >= 4 then Bid (sameOrNextLevel s, s)
-                      if shape[response] >= 3 then Bid (level + 1, response)
-                      Bid (level, 4) ]
-                    |> List.tryFind isLegal |> Option.defaultValue Pass
+                // Opener also answers a new suit from a passed hand, though it is not forcing.
+                elif response < 4 && response <> opened && level < gameLevel response then
+                    forcedBid (level, response, opened)
                 else Pass
             | _ -> Pass
         | _ -> Pass
+    let choice =
+        match forcingNewSuit with
+        | Some forcing when choice = Pass || not (isLegal choice) -> forcedBid forcing
+        | _ -> choice
     if isLegal choice then choice else Pass
 
 let legalCards trick hand =

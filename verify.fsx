@@ -74,6 +74,19 @@ check "Natural 2C overcall is not answered as a strong 2C"
                                   0, hand "Q98" "QJ9" "8765" "Q76"])) 2 0 2)
 check "4-4-4-1 opener does not pass a 1S response"
     (callsBy 0 (bidOut 0 (complete [0, hand "2" "AQ54" "KJ54" "A543"; 2, hand "KQ54" "632" "Q32" "Q72"])) |> List.item 1 <> Pass)
+// North opens and South (the human) has just bid; calls run from North as dealer.
+let northAfter northHand calls =
+    acol (calls |> List.mapi (fun i c -> i % 4, c) |> List.rev) 0 northHand
+let ntOpener, weakTwo, sixHearts = hand "K32" "AQ4" "K954" "Q32", hand "Q2" "KQJ932" "432" "32", hand "K2" "AQJ543" "K32" "32"
+let forcing = [ "1NT-3S", ntOpener, [Bid (1, 4); Pass; Bid (3, 3); Pass]
+                "2NT-3H", hand "AK3" "Q42" "AKJ4" "KQ3", [Bid (2, 4); Pass; Bid (3, 2); Pass]
+                "weak 2H-2S", weakTwo, [Bid (2, 2); Pass; Bid (2, 3); Pass]
+                "1H-1S-2H-3C", sixHearts, [Bid (1, 2); Pass; Bid (1, 3); Pass; Bid (2, 2); Pass; Bid (3, 0); Pass]
+                "1D-1H-1S-2C", hand "AQ32" "K2" "KJ543" "32", [Bid (1, 1); Pass; Bid (1, 2); Pass; Bid (1, 3); Pass; Bid (2, 0); Pass] ]
+for name, northHand, calls in forcing do
+    check ("Opener does not pass a forcing change of suit: " + name) (northAfter northHand calls <> Pass)
+check "1NT opener passes a weak 2S takeout" (northAfter ntOpener [Bid (1, 4); Pass; Bid (2, 3); Pass] = Pass)
+check "Opener passes a 4S response, which is to play" (northAfter sixHearts [Bid (1, 2); Pass; Bid (4, 3); Pass] = Pass)
 let spadeAce = { Suit = 3; Rank = 14 }
 let voidHand = [ { Suit = 2; Rank = 9 }; { Suit = 2; Rank = 2 }; { Suit = 0; Rank = 3 } ]
 check "Void hand discards rather than trumping partner's winner" (botCard 2 1 [3, spadeAce] voidHand = { Suit = 0; Rank = 3 })
