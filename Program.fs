@@ -9,17 +9,34 @@ type Phase = Auction | Play | Finished
 
 [<STAThread; EntryPoint>]
 let main _ =
+    // Render sharply at the system DPI instead of letting Windows stretch a 96-DPI bitmap.
+    Application.SetHighDpiMode(HighDpiMode.SystemAware) |> ignore
     Application.EnableVisualStyles()
     Application.SetCompatibleTextRenderingDefault(false)
+    // The layout is designed in 96-DPI pixels for a 2000 × 1040 client area (13 cards
+    // across, all rows visible). Scale it to the system DPI, then shrink it uniformly
+    // if the screen cannot hold it. Font sizes are in points, which already follow the DPI.
+    let dpi =
+        use g = Graphics.FromHwnd IntPtr.Zero
+        g.DpiX / 96.0f
+    let area = Screen.FromPoint(Control.MousePosition).WorkingArea
+    let fit =
+        min 1.0f (min (float32 area.Width / (2000.0f * dpi))
+                      (float32 (area.Height - SystemInformation.CaptionHeight) / (1040.0f * dpi)))
+    let px (n: int) = int (MathF.Round(float32 n * dpi * fit))
+    let pt (size: float32) = size * fit
     let felt = Color.FromArgb(24, 79, 66)
     let dark = Color.FromArgb(17, 57, 49)
     let white = Color.FromArgb(255, 251, 235)
-    let form = new Form(Text = "Bridge Table  |  Acol", ClientSize = Size(1500, 1040),
-                        MinimumSize = Size(1100, 900), StartPosition = FormStartPosition.CenterScreen,
-                        WindowState = FormWindowState.Maximized,
-                        BackColor = felt, ForeColor = white, Font = new Font("Segoe UI", 14.0f))
-    let root = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, Padding = Padding(16))
-    for h in [48; 200; 220; 44; 210; 200] do root.RowStyles.Add(RowStyle(SizeType.Absolute, float32 h)) |> ignore
+    let form = new Form(Text = "Bridge Table  |  Acol", ClientSize = Size(px 1500, px 960),
+                        MinimumSize = Size(px 1100, px 700), StartPosition = FormStartPosition.CenterScreen,
+                        WindowState = FormWindowState.Maximized, AutoScaleMode = AutoScaleMode.None,
+                        BackColor = felt, ForeColor = white, Font = new Font("Segoe UI", pt 14.0f))
+    // Scrolls instead of clipping the lower rows when the window is made small.
+    let root = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, Padding = Padding(px 16),
+                                    AutoScroll = true)
+    // The bidding row holds three rows of 82-pixel buttons.
+    for h in [48; 200; 220; 44; 250; 200] do root.RowStyles.Add(RowStyle(SizeType.Absolute, float32 (px h))) |> ignore
     root.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
     form.Controls.Add root
     let label text =
@@ -27,13 +44,15 @@ let main _ =
     let flow () =
         new FlowLayoutPanel(Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true, Margin = Padding(0))
     let button text width height =
-        new Button(Text = text, Width = width, Height = height, Margin = Padding(2), UseVisualStyleBackColor = false,
+        new Button(Text = text, Width = px width, Height = px height, Margin = Padding(px 2), UseVisualStyleBackColor = false,
                    BackColor = white, ForeColor = dark, FlatStyle = FlatStyle.Flat)
-    use cardFont = new Font("Segoe UI", 36.0f, FontStyle.Bold)
-    use suitFont = new Font("Segoe UI Symbol", 46.0f)
-    use cardNameFont = new Font("Segoe UI", 18.0f, FontStyle.Bold)
-    use bidFont = new Font("Segoe UI", 24.0f, FontStyle.Bold)
-    use statusFont = new Font("Segoe UI", 16.0f, FontStyle.Bold)
+    use cardFont = new Font("Segoe UI", pt 36.0f, FontStyle.Bold)
+    use suitFont = new Font("Segoe UI Symbol", pt 46.0f)
+    use cardNameFont = new Font("Segoe UI", pt 18.0f, FontStyle.Bold)
+    // Two lines such as "Queen / of diamonds" must fit a 144 × 62 slot: 16pt measures 129 × 60.
+    use tileNameFont = new Font("Segoe UI", pt 16.0f, FontStyle.Bold)
+    use bidFont = new Font("Segoe UI", pt 24.0f, FontStyle.Bold)
+    use statusFont = new Font("Segoe UI", pt 16.0f, FontStyle.Bold)
     let displaySuitOrder = [| 0; 1; 3; 2 |]
     let displayOrder card = Array.findIndex ((=) card.Suit) displaySuitOrder, -card.Rank
     let suitNames = [| "Clubs"; "Diamonds"; "Hearts"; "Spades"; "No trump" |]
@@ -47,14 +66,14 @@ let main _ =
     let rulesButton = button "System & rules" 185 40
     let info = label ""
     info.AutoSize <- false
-    info.Size <- Size(850, 40)
+    info.Size <- Size(px 850, px 40)
     info.Dock <- DockStyle.None
     toolbar.Controls.AddRange [| dealButton :> Control; hintButton; rulesButton; info |]
     root.Controls.Add(toolbar, 0, 0)
 
     let makeHand row title =
         let panel = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding(0))
-        panel.RowStyles.Add(RowStyle(SizeType.Absolute, 28.0f)) |> ignore
+        panel.RowStyles.Add(RowStyle(SizeType.Absolute, float32 (px 28))) |> ignore
         panel.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
         let caption = label title
         let cards = flow ()
@@ -72,7 +91,7 @@ let main _ =
     root.Controls.Add(table, 0, 2)
     let flank column title =
         let pane = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding(0))
-        pane.RowStyles.Add(RowStyle(SizeType.Absolute, 28.0f)) |> ignore
+        pane.RowStyles.Add(RowStyle(SizeType.Absolute, float32 (px 28))) |> ignore
         pane.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
         let name = label title
         let cards = new FlowLayoutPanel(Dock = DockStyle.Fill, AutoScroll = true)
@@ -82,11 +101,12 @@ let main _ =
         name, cards
     let westName, westHand = flank 0 "West"
     let eastName, eastHand = flank 2 "East"
-    let center = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = dark, Margin = Padding(8, 0, 8, 0))
-    center.RowStyles.Add(RowStyle(SizeType.Absolute, 95.0f)) |> ignore
+    let center = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = dark,
+                                      Margin = Padding(px 8, 0, px 8, 0))
+    center.RowStyles.Add(RowStyle(SizeType.Absolute, float32 (px 95))) |> ignore
     center.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
     let trickView = label ""
-    trickView.Font <- new Font("Segoe UI Semibold", 18.0f)
+    trickView.Font <- new Font("Segoe UI Semibold", pt 18.0f)
     let auctionLog = new ListBox(Dock = DockStyle.Fill, BackColor = dark, ForeColor = white,
                                  BorderStyle = BorderStyle.None, IntegralHeight = false)
     center.Controls.Add(trickView, 0, 0)
@@ -216,6 +236,7 @@ let main _ =
                 caption.Text <- seats[seat] + (if seat = 2 then " · You" else "")
                                 + (if dummyVisible && dummy = Some seat then " · Dummy" else "")
                                 + (if phase <> Finished && turn = seat then "  ◀" else "")
+                panel.SuspendLayout()
                 clear panel
                 let legalNow = if canPlay then legalCards trick hands[seat] else []
                 for card in List.sortBy displayOrder hands[seat] do
@@ -227,11 +248,11 @@ let main _ =
                             let color = tile.ForeColor
                             let flags = TextFormatFlags.HorizontalCenter ||| TextFormatFlags.VerticalCenter
                             TextRenderer.DrawText(args.Graphics, cardName card, cardFont,
-                                                  Rectangle(0, 0, tile.Width, 55), color, flags)
+                                                  Rectangle(0, 0, tile.Width, px 52), color, flags)
                             TextRenderer.DrawText(args.Graphics, suits[card.Suit], suitFont,
-                                                  Rectangle(0, 48, tile.Width, 61), color, flags)
+                                                  Rectangle(0, px 44, tile.Width, px 58), color, flags)
                             TextRenderer.DrawText(args.Graphics, rankName card.Rank + "\nof " + suitNames[card.Suit].ToLowerInvariant(),
-                                                  cardNameFont, Rectangle(0, 109, tile.Width, 52), color, flags))
+                                                  tileNameFont, Rectangle(0, px 102, tile.Width, px 62), color, flags))
                     if not faceUp then tile.BackColor <- Color.FromArgb(46, 86, 151)
                     elif card.Suit = 1 || card.Suit = 2 then tile.ForeColor <- Color.Firebrick
                     if canPlay && not (List.contains card legalNow) then tile.BackColor <- Color.Silver
@@ -239,6 +260,7 @@ let main _ =
                     if List.contains card legalNow then
                         tile.Click.Add(fun _ -> if not updating && turn = seat && isHuman seat then placeCard card)
                     panel.Controls.Add tile
+                panel.ResumeLayout()
             auctionLog.BeginUpdate()
             auctionLog.Items.Clear()
             for seat, call in List.rev history do
@@ -261,6 +283,7 @@ let main _ =
                 match currentContract with
                 | Some c -> sprintf "%s   |   Tricks: N–S %d · E–W %d" (describe c) tricks[0] tricks[1]
                 | None -> "South partners North. Hearts and spades are majors."
+            bidding.SuspendLayout()
             clear bidding
             if phase = Auction && isHuman turn then
                 for call in [ yield Pass; yield Double; yield Redouble
@@ -278,13 +301,14 @@ let main _ =
                             let flags = TextFormatFlags.HorizontalCenter ||| TextFormatFlags.VerticalCenter
                             let color = if b.Enabled then dark else SystemColors.GrayText
                             TextRenderer.DrawText(args.Graphics, callName call, bidFont,
-                                                  Rectangle(0, 0, b.Width, 43), color, flags)
+                                                  Rectangle(0, 0, b.Width, px 43), color, flags)
                             TextRenderer.DrawText(args.Graphics, suitNames[strain], cardNameFont,
-                                                  Rectangle(0, 43, b.Width, 33), color, flags))
+                                                  Rectangle(0, px 43, b.Width, px 33), color, flags))
                     | _ -> ()
                     b.Enabled <- legal history turn call
                     b.Click.Add(fun _ -> if not updating && isHuman turn then placeCall call)
                     bidding.Controls.Add b
+            bidding.ResumeLayout()
         finally
             form.ResumeLayout(true)
             updating <- false
