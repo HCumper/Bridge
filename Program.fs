@@ -53,6 +53,9 @@ let main _ =
     use cardFont = new Font("Segoe UI", pt 36.0f, FontStyle.Bold)
     use suitFont = new Font("Segoe UI Symbol", pt 56.0f)
     use strainNameFont = new Font("Segoe UI", pt 18.0f, FontStyle.Bold)
+    // East and West use small two-line cards: rank above suit.
+    use sideRankFont = new Font("Segoe UI", pt 18.0f, FontStyle.Bold)
+    use sideSuitFont = new Font("Segoe UI Symbol", pt 18.0f)
     use bidFont = new Font("Segoe UI", pt 24.0f, FontStyle.Bold)
     use statusFont = new Font("Segoe UI", pt 16.0f, FontStyle.Bold)
     use auctionFont = new Font("Segoe UI Semibold", pt 22.0f)
@@ -83,7 +86,7 @@ let main _ =
         panel.Controls.Add(caption, 0, 0)
         panel.Controls.Add(cards, 0, 1)
         root.Controls.Add(panel, 0, row)
-        caption, cards
+        caption, (cards :> Control)
     let northName, northHand = makeHand 1 "North"
     let southName, southHand = makeHand 5 "South"
 
@@ -97,11 +100,12 @@ let main _ =
         pane.RowStyles.Add(RowStyle(SizeType.Absolute, float32 (px 28))) |> ignore
         pane.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
         let name = label title
-        let cards = new FlowLayoutPanel(Dock = DockStyle.Fill, AutoScroll = true)
+        // Side hands are placed by hand (layoutSide) so all 13 cards fit without scrolling.
+        let cards = new Panel(Dock = DockStyle.Fill)
         pane.Controls.Add(name, 0, 0)
         pane.Controls.Add(cards, 0, 1)
         table.Controls.Add(pane, column, 0)
-        name, cards
+        name, (cards :> Control)
     let westName, westHand = flank 0 "West"
     let eastName, eastHand = flank 2 "East"
     let center = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = dark,
@@ -245,16 +249,25 @@ let main _ =
     // Card tiles are made once per deal. A redraw removes the tiles of played cards and
     // restyles the others only where their face, colour or playability has changed.
     let shownFaceUp = Array.create 4 false
+    let isSide seat = seat = 1 || seat = 3
+    let rankText card = (cardName card).Replace(suits[card.Suit], "")
     let makeTile seat card =
         let tile = button "" 144 166
         tile.Tag <- box card
         tile.Paint.Add(fun args ->
             if isFaceUp seat then
                 let flags = TextFormatFlags.HorizontalCenter ||| TextFormatFlags.VerticalCenter
-                TextRenderer.DrawText(args.Graphics, cardName card, cardFont,
-                                      Rectangle(0, px 6, tile.Width, px 60), tile.ForeColor, flags)
-                TextRenderer.DrawText(args.Graphics, suits[card.Suit], suitFont,
-                                      Rectangle(0, px 58, tile.Width, px 100), tile.ForeColor, flags))
+                if isSide seat then
+                    let half = tile.Height / 2
+                    TextRenderer.DrawText(args.Graphics, rankText card, sideRankFont,
+                                          Rectangle(0, px 2, tile.Width, half), tile.ForeColor, flags)
+                    TextRenderer.DrawText(args.Graphics, suits[card.Suit], sideSuitFont,
+                                          Rectangle(0, half - px 2, tile.Width, tile.Height - half), tile.ForeColor, flags)
+                else
+                    TextRenderer.DrawText(args.Graphics, cardName card, cardFont,
+                                          Rectangle(0, px 6, tile.Width, px 60), tile.ForeColor, flags)
+                    TextRenderer.DrawText(args.Graphics, suits[card.Suit], suitFont,
+                                          Rectangle(0, px 58, tile.Width, px 100), tile.ForeColor, flags))
         tile.Click.Add(fun _ ->
             if not updating && canPlayFrom seat && List.contains card (legalCards trick hands[seat]) then placeCard card)
         tile
@@ -267,6 +280,37 @@ let main _ =
             panel.ResumeLayout()
             // Differs from the real state, so the next redraw styles every new tile.
             shownFaceUp[seat] <- not (isFaceUp seat)
+    // East's and West's tiles are sized to their pane so all 13 cards show: face up, in
+    // four suit rows (♠ ♥ ♦ ♣) like a hand diagram; face down, as two rows of backs.
+    // SetBounds leaves a tile alone when its place is unchanged.
+    let layoutSide seat =
+        let _, panel = handViews[seat]
+        let tiles = panel.Controls |> Seq.cast<Control> |> Seq.toList
+        let width, height = panel.ClientSize.Width, panel.ClientSize.Height
+        let gap = px 4
+        if width > 0 && height > 0 && not tiles.IsEmpty then
+            let cardOf (tile: Control) = tile.Tag :?> Card
+            if isFaceUp seat then
+                let rows =
+                    [3; 2; 1; 0] |> List.map (fun s ->
+                        tiles |> List.filter (fun t -> (cardOf t).Suit = s) |> List.sortByDescending (fun t -> (cardOf t).Rank))
+                let longest = rows |> List.map List.length |> List.max
+                let rowHeight = height / 4
+                let h = rowHeight - gap
+                let w = max (px 30) (min h ((width - gap) / longest - gap))
+                let x0 = max 0 ((width - longest * (w + gap) + gap) / 2)
+                rows |> List.iteri (fun r row ->
+                    row |> List.iteri (fun i t -> t.SetBounds(x0 + i * (w + gap), r * rowHeight + gap / 2, w, h)))
+            else
+                let columns = 7
+                let w = (width - gap) / columns - gap
+                let h = min (w * 7 / 5) ((height - gap) / 2 - gap)
+                let used = min tiles.Length columns
+                let rowCount = (tiles.Length + columns - 1) / columns
+                let x0 = max 0 ((width - used * (w + gap) + gap) / 2)
+                let y0 = max 0 ((height - rowCount * (h + gap) + gap) / 2)
+                tiles |> List.iteri (fun i t -> t.SetBounds(x0 + (i % columns) * (w + gap), y0 + (i / columns) * (h + gap), w, h))
+    for seat in [1; 3] do (snd handViews[seat]).Resize.Add(fun _ -> layoutSide seat)
     let updateTiles seat =
         let _, panel = handViews[seat]
         let faceUp = isFaceUp seat
@@ -286,6 +330,7 @@ let main _ =
                     tile.AccessibleName <- if faceUp then fullCardName card else "Face-down card"
                     tile.Invalidate()
         shownFaceUp[seat] <- faceUp
+        if isSide seat then layoutSide seat
 
     // Bid buttons are made once; a redraw only enables the legal calls.
     let bidButtons =
